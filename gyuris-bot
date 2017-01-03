@@ -1,0 +1,343 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from telegram import Bot
+import sys, os, time, atexit, subprocess
+from signal import SIGTERM
+import logging, tarfile, re
+import codecs
+import ConfigParser
+
+configuration = ConfigParser.ConfigParser()
+configuration.readfp(codecs.open("gyuris-bot.conf", "r", "utf8"))
+token = configuration.get('bot','token')
+users = configuration.items('users')
+chats = configuration.items('chats')
+work_directory = configuration.get('daemon','workdir')
+server = configuration.get('daemon','server')
+upload_dir_on_server = configuration.get('daemon','upload')
+download_dir_on_server = configuration.get('daemon','download')
+
+
+class Daemon:
+	def __init__(self, pidfile, stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
+		self.stdin = stdin
+		self.stdout = stdout
+		self.stderr = stderr
+		self.pidfile = pidfile
+	
+	def daemonize(self):
+		try: 
+			pid = os.fork() 
+			if pid > 0:
+				sys.exit(0) 
+		except OSError, e: 
+			sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
+			sys.exit(1)
+		os.chdir("/") 
+		os.setsid() 
+		os.umask(0) 
+		try: 
+			pid = os.fork() 
+			if pid > 0:
+				sys.exit(0) 
+		except OSError, e: 
+			sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
+			sys.exit(1) 
+		sys.stdout.flush()
+		sys.stderr.flush()
+		si = file(self.stdin, 'r')
+		so = file(self.stdout, 'a+')
+		se = file(self.stderr, 'a+', 0)
+		os.dup2(si.fileno(), sys.stdin.fileno())
+		os.dup2(so.fileno(), sys.stdout.fileno())
+		os.dup2(se.fileno(), sys.stderr.fileno())
+		atexit.register(self.delpid)
+		pid = str(os.getpid())
+		file(self.pidfile,'w+').write("%s\n" % pid)
+	
+	def delpid(self):
+		os.remove(self.pidfile)
+
+	def start(self):
+		try:
+			pf = file(self.pidfile,'r')
+			pid = int(pf.read().strip())
+			pf.close()
+		except IOError:
+			pid = None
+	
+		if pid:
+			message = "pidfile %s already exist. Daemon already running?\n"
+			sys.stderr.write(message % self.pidfile)
+			sys.exit(1)
+		self.daemonize()
+		self.run()
+
+	def stop(self):
+		try:
+			pf = file(self.pidfile,'r')
+			pid = int(pf.read().strip())
+			pf.close()
+		except IOError:
+			pid = None
+	
+		if not pid:
+			message = "pidfile %s does not exist. Daemon not running?\n"
+			sys.stderr.write(message % self.pidfile)
+			return # not an error in a restart
+
+		# Try killing the daemon process	
+		try:
+			while 1:
+				os.kill(pid, SIGTERM)
+				time.sleep(0.1)
+		except OSError, err:
+			err = str(err)
+			if err.find("No such process") > 0:
+				if os.path.exists(self.pidfile):
+					os.remove(self.pidfile)
+			else:
+				print str(err)
+				sys.exit(1)
+
+	def restart(self):
+		self.stop()
+		self.start()
+
+	def run(self):
+		"""
+		"""
+
+image_file_list = []
+video_file_name = ""
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def get_user_name(user_list, user_id):
+    for user_item in user_list:
+        if int(user_item[0]) == int(user_id):
+            return user_item[1]
+    return "unknown"
+
+def get_chat_id(chats, chat_name):
+    for chat in chats:
+        if (chat[0]) == chat_name.decode('utf-8'):
+            return chat[1]
+    return "unknown"
+
+def kill_bot(bot, update):
+    update.message.reply_text('That was it, folks. Exiting immediately!!')
+    os._exit(1)
+
+def empty(bot, update):
+    global image_file_list
+    global video_file_name
+    message_string = ""
+    if (len(image_file_list) > 0):
+        for file in image_file_list:
+            if get_user_name(users, update.message.from_user.id) in file:
+                os.remove(file)
+        message_string += "%s kép törölve." % len(image_file_list)
+        image_file_list = []
+    if (video_file_name != ""):
+        if os.path.isfile(video_file_name):
+             os.remove(video_file_name)
+             video_file_name = ""
+             message_string += "\nA videó törölve."
+    if message_string != "":
+        update.message.reply_text(message_string)
+    else:
+        update.message.reply_text("Nincs mit törölni.")
+
+def help(bot, update):
+   message_string = "Ez a robot automatikusan elmenti az ide beküldött fotókat és videót.\nHa olyan üzenetet küldesz be ami blog: vagy video: szóval kezdődik akkor a kettőspont utáni szöveggel a robot elküldi a www.gyuris.eu oldalra a korábban elmentett fotókat egy blog posztként vagy a videót egy videó posztként.\nKisegítő parancsok:\n/show\nMegmutatja, hogy éppen milyen képek és videó van a robotnál elmentve.\n/empty\nKitöröl minden képet és videót a robot listájáról"
+   update.message.reply_text("%s" % message_string)
+
+
+
+def show(bot, update):
+    global image_file_list
+    global video_file_name
+    message_string = "Nincsen elmentett képed."
+    if len(image_file_list) > 0:
+        message_string = ""
+        for file in image_file_list:
+            if get_user_name(users, update.message.from_user.id) in file:
+                 logger.warn('%s' % file)
+                 message_string += '%s\n' % file
+    if video_file_name != "":
+        if len(image_file_list) == 0:
+            message_string = ""
+        message_string += '%s\n' % video_file_name
+    if message_string != "":
+        update.message.reply_text("%s" % message_string)
+
+def video_message(bot, update):
+    global video_file_name
+    if update.message.video:
+        from_user = get_user_name(users, update.message.from_user.id)
+        date = str(update.message.date)
+        date = date.replace(" ","_")
+        date = date.replace(":","-")
+        caption = update.message.caption
+        caption = caption.replace(" ","_")
+        video_file = bot.getFile(update.message.video.file_id)
+        mime_type_search = re.search('^https:\/\/api\.telegram\.org\/file\/.*\/video\/(.*)\.(.*)$', video_file.file_path)
+        if mime_type_search:
+            mime_type = mime_type_search.group(2)
+            file_name = mime_type_search.group(1)
+        video_file.download('%s/%s-%s-%s.%s' % (work_directory, from_user,date,file_name,mime_type))
+        logger.warn('Video saved as %s/%s-%s-%s.%s' % (work_directory,from_user,date,file_name,mime_type))
+        video_file_name = '%s/%s-%s-%s.%s' % (work_directory,from_user,date,file_name,mime_type)
+
+def photo_message(bot, update):
+    global image_file_list
+    if update.message.photo:
+        from_user = get_user_name(users, update.message.from_user.id)
+        date = str(update.message.date)
+        date = date.replace(" ","_")
+        date = date.replace(":","-")
+        caption = update.message.caption
+        caption = caption.replace(" ","_")
+        photo_file = bot.getFile(update.message.photo[-1].file_id)
+        image_file_name_index = 0
+        image_file_name = '%s/%s-%s-%s-%d.jpg' % (work_directory,from_user,caption,date, image_file_name_index)
+        while os.path.isfile(image_file_name):
+            image_file_name_index += 1
+            image_file_name = '%s/%s-%s-%s-%d.jpg' % (work_directory,from_user,caption,date, image_file_name_index)
+        photo_file.download('%s/%s-%s-%s-%d.jpg' % (work_directory,from_user,caption,date, image_file_name_index))
+        image_file_list.append('%s/%s-%s-%s-%d.jpg' % (work_directory,from_user,caption,date, image_file_name_index))
+        logger.warn('Image saved as %s/%s-%s-%s-%d.jpg' % (work_directory,from_user,caption,date, image_file_name_index))
+
+
+def package_content(package_type, update):
+        logger.warn('%s command received' % package_type)
+        date = str(update.message.date)
+        date = date.replace(" ","_")
+        date = date.replace(":","-")
+        post_id = "%s-%s" % (get_user_name(users,update.message.from_user.id),date)
+        tar_file = tarfile.open("%s/%s.tar" % (work_directory,post_id), "w")
+        post_text_search = re.search('%s: (.*)' % package_type, update.message.text)
+        if post_text_search:
+            post_text = post_text_search.group(1)
+        with open("%s/node.txt" % work_directory, "w") as text_file:
+            text_file.write("TYPE: {0}".format("%s\n" % package_type))
+            text_file.write("AUTHOR: {0}".format("%s\n" % get_user_name(users, update.message.from_user.id)))
+            text_file.write("SUBJECT: {0}".format("\n"))
+            text_file.write("BODY: {0}".format("%s\n" % post_text.encode('utf-8').strip()))
+        tar_file.add("%s/node.txt" % work_directory)
+        os.remove("%s/node.txt" % work_directory)
+        return post_id, tar_file
+
+
+def text_message(bot, update):
+    global image_file_list
+    global post_text
+    post_id = ""
+    if ('blog:' in update.message.text) and (image_file_list):
+        post_id, tar_file = package_content('blog', update)
+        for file in image_file_list:
+            if get_user_name(users, update.message.from_user.id) in file:
+                tar_file.add(file)
+                os.remove(file)
+        image_file_list = []
+        tar_file.close()
+    if ('video:' in update.message.text) and (video_file_name):
+        post_id, tar_file = package_content('video', update)
+        if get_user_name(users, update.message.from_user.id) in video_file_name:
+            tar_file.add(video_file_name)
+            os.remove(video_file_name)
+        video_file_name = ""
+        tar_file.close()
+    if  (post_id != ""):
+        sftp = subprocess.Popen(["sftp", "%s:%s" % (server,upload_dir_on_server)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+        stdout_value, stderr_value = sftp.communicate(input="put %s/%s.tar" % (work_directory,post_id))
+        returncode = sftp.returncode
+        if returncode:
+            logger.warn('sftp failed %s' % returncode)
+            update.message.reply_text("%s - %s" % (stderr_value,returncode))
+        else:
+           logger.warn('The package is uploaded as %s.tar' % post_id)
+           update.message.reply_text("A poszt feltöltve a www.gyuris.eu oldalra")
+
+def error(bot, update, error):
+    logger.warn('Update "%s" caused error "%s"' % (update, error))
+    update.message.reply_text("%s" % error)
+
+def main():
+    logger.warn('Starting main')
+    token = "262548602:AAEdctvTqFKG-bXYBsBDY96_W2C73oqVuqY"
+    updater = Updater(token)
+    bot = Bot(token)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("kill", kill_bot))
+    dp.add_handler(CommandHandler("empty", empty))
+    dp.add_handler(CommandHandler("show", show))
+    dp.add_handler(CommandHandler("help", help))
+    dp.add_handler(MessageHandler(Filters.photo, photo_message))
+    dp.add_handler(MessageHandler(Filters.video, video_message))
+    dp.add_handler(MessageHandler(Filters.text, text_message))
+    dp.add_error_handler(error)
+    logger.warn('Starting polling')
+    updater.start_polling()
+    logger.warn('Starting idle')
+
+    while 1:
+        sftp = subprocess.Popen(["sftp", "%s:%s" % (server, download_dir_on_server)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+        stdout_value, stderr_value = sftp.communicate(input="ls -1 *.txt")
+        returncode = sftp.returncode
+        if returncode:
+            logger.warn('Could not list the download folder on www.gyuris.eu\n%s' % stderr_value)
+        else:
+           for line in stdout_value.splitlines():
+               if re.match('^Telegram.*txt$', line) is not None:
+                   chat_name_search = re.search('^Telegram_(.*)_.*$', line)
+                   if chat_name_search:
+                       chat_id = get_chat_id(chats, chat_name_search.group(1))
+                   else:
+                       logger.warn('Message filename does not have chat: %s' % line)
+                   time.sleep(5)
+                   sftp = subprocess.Popen(["sftp", "%s:%s" % (server,download_dir_on_server)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+                   stdout_value, stderr_value = sftp.communicate(input="get %s %s/" % (line,work_directory)) 
+                   returncode = sftp.returncode
+                   if returncode:
+                       logger.warn('Could not fetch the message file.\n%s' % stderr_value)
+                   else:
+                       logger.warn('%s' % stdout_value)
+                       with open('%s/%s' % (work_directory, line), 'r') as message_file:
+                           message=message_file.read()
+                           bot.sendMessage(chat_id=chat_id, text="%s" % message)
+                           time.sleep(5)
+                           sftp = subprocess.Popen(["sftp", "%s:%s" % (server,download_dir_on_server)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+                           stdout_value, stderr_value = sftp.communicate(input="rm %s" % line)
+                           returncode = sftp.returncode
+                           if returncode:
+                               logger.warn('Could not delete the old messgae\n%s' % stderr_value)
+                           else:
+                                logger.warn('The message is passed to the Telegram group')
+        time.sleep(60)
+    updater.idle()
+
+class MyDaemon(Daemon):
+    def run(self):
+         main()
+ 
+if __name__ == "__main__":
+        daemon = MyDaemon('%s/gyuris-bot.pid' % work_directory, stdout='%s/gyuris-bot.log' % work_directory, stderr='%s/gyuris-bot.log' % work_directory)
+        if len(sys.argv) == 2:
+                if 'start' == sys.argv[1]:
+                        daemon.start()
+                elif 'stop' == sys.argv[1]:
+                        daemon.stop()
+                elif 'restart' == sys.argv[1]:
+                        daemon.restart()
+                else:
+                        print "Unknown command"
+                        sys.exit(2)
+                sys.exit(0)
+        else:
+                print "usage: %s start|stop|restart" % sys.argv[0]
+                sys.exit(2)
