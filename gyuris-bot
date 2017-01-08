@@ -223,13 +223,18 @@ def package_content(package_type, update):
         post_text_search = re.search('%s: (.*)' % package_type, update.message.text)
         if post_text_search:
             post_text = post_text_search.group(1)
-        with open("%s/node.txt" % work_directory, "w") as text_file:
-            text_file.write("TYPE: {0}".format("%s\n" % package_type))
-            text_file.write("AUTHOR: {0}".format("%s\n" % get_user_name(users, update.message.from_user.id)))
-            text_file.write("SUBJECT: {0}".format("\n"))
-            text_file.write("BODY: {0}".format("%s\n" % post_text.encode('utf-8').strip()))
-        tar_file.add("%s/node.txt" % work_directory)
-        os.remove("%s/node.txt" % work_directory)
+        with open("%s/TYPE.txt" % work_directory, "w") as text_file:
+            text_file.write("{0}".format("%s\n" % package_type))
+        tar_file.add("%s/TYPE.txt" % work_directory)
+        os.remove("%s/TYPE.txt" % work_directory)
+        with open("%s/AUTHOR.txt" % work_directory, "w") as text_file:
+            text_file.write("{0}".format("%s\n" % get_user_name(users, update.message.from_user.id)))
+        tar_file.add("%s/AUTHOR.txt" % work_directory)
+        os.remove("%s/AUTHOR.txt" % work_directory)
+        with open("%s/BODY.txt" % work_directory, "w") as text_file:
+            text_file.write("{0}".format("%s\n" % post_text.encode('utf-8').strip()))
+        tar_file.add("%s/BODY.txt" % work_directory)
+        os.remove("%s/BODY.txt" % work_directory)
         return post_id, tar_file
 
 
