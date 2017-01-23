@@ -153,7 +153,7 @@ def empty(bot, update):
         update.message.reply_text("Nincs mit törölni.")
 
 def help(bot, update):
-   message_string = "Ez a robot automatikusan elmenti az ide beküldött fotókat és videót.\nHa olyan üzenetet küldesz be ami blog: vagy video: szóval kezdődik akkor a kettőspont utáni szöveggel a robot elküldi a www.gyuris.eu oldalra a korábban elmentett fotókat egy blog posztként vagy a videót egy videó posztként.\nKisegítő parancsok:\n/show\nMegmutatja, hogy éppen milyen képek és videó van a robotnál elmentve.\n/empty\nKitöröl minden képet és videót a robot listájáról"
+   message_string = "Ez a robot automatikusan elmenti az ide beküldött fotókat és videót.\nHa olyan üzenetet küldesz be ami blog: vagy video: szóval kezdődik akkor a kettőspont utáni szöveggel a robot elküldi a www.gyuris.eu oldalra a korábban elmentett fotókat egy blog posztként vagy a videót egy videó posztként.\nA poszt címe vagy első néhány szó lesz, vagy a posztban # jelet téve a # jel előtti szöveg lesz a poszt címe.\nKisegítő parancsok:\n/show\nMegmutatja, hogy éppen milyen képek és videó van a robotnál elmentve.\n/empty\nKitöröl minden képet és videót a robot listájáról"
    update.message.reply_text("%s" % message_string)
 
 
@@ -220,7 +220,7 @@ def package_content(package_type, update):
         date = date.replace(":","-")
         post_id = "%s-%s" % (get_user_name(users,update.message.from_user.id),date)
         tar_file = tarfile.open("%s/%s.tar" % (work_directory,post_id), "w")
-        post_text_search = re.search('%s: (.*)' % package_type, update.message.text)
+        post_text_search = re.search('%s:(.*)' % package_type, update.message.text)
         if post_text_search:
             post_text = post_text_search.group(1)
         with open("%s/TYPE.txt" % work_directory, "w") as text_file:
